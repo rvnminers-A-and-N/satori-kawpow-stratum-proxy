@@ -3,21 +3,33 @@ from copy import deepcopy
 import json
 import time
 import sys
+import os
 import urllib.parse
 
 import base58
 import sha3
 
 from aiohttp import ClientSession
-from aiorpcx import RPCSession, JSONRPCConnection, JSONRPCAutoDetect, Request, serve_rs, handler_invocation, RPCError, TaskGroup, JSONRPCv1
+from aiorpcx import (
+    RPCSession,
+    JSONRPCConnection,
+    JSONRPCAutoDetect,
+    Request,
+    serve_rs,
+    handler_invocation,
+    RPCError,
+    TaskGroup,
+    JSONRPCv1,
+)
+
 from functools import partial
 from hashlib import sha256
 from typing import Set, List, Optional
 from datetime import datetime
 
 
-#KAWPOW_EPOCH_LENGTH = 7500
-KAWPOW_EPOCH_LENGTH = 12000
+KAWPOW_EPOCH_LENGTH = 7500
+#EVRPROGPOW_EPOCH_LENGTH = 12000
 hashratedict = {}
 
 def var_int(i: int) -> bytes:
@@ -25,24 +37,24 @@ def var_int(i: int) -> bytes:
     # https://github.com/bitcoin/bitcoin/blob/efe1ee0d8d7f82150789f1f6840f139289628a2b/src/serialize.h#L247
     # "CompactSize"
     assert i >= 0, i
-    if i<0xfd:
-        return i.to_bytes(1, 'little')
-    elif i<=0xffff:
-        return b'\xfd'+i.to_bytes(2, 'little')
-    elif i<=0xffffffff:
-        return b'\xfe'+i.to_bytes(4, 'little')
+    if i < 0xFD:
+        return i.to_bytes(1, "little")
+    elif i <= 0xFFFF:
+        return b"\xfd" + i.to_bytes(2, "little")
+    elif i <= 0xFFFFFFFF:
+        return b"\xfe" + i.to_bytes(4, "little")
     else:
-        return b'\xff'+i.to_bytes(8, 'little')
+        return b"\xff" + i.to_bytes(8, "little")
 
 def op_push(i: int) -> bytes:
     if i < 0x4C:
-        return i.to_bytes(1, 'little')
-    elif i <= 0xff:
-        return b'\x4c'+i.to_bytes(1, 'little')
-    elif i <= 0xffff:
-        return b'\x4d'+i.to_bytes(2, 'little')
+        return i.to_bytes(1, "little")
+    elif i <= 0xFF:
+        return b"\x4c" + i.to_bytes(1, "little")
+    elif i <= 0xFFFF:
+        return b"\x4d" + i.to_bytes(2, "little")
     else:
-        return b'\x4e'+i.to_bytes(4, 'little')
+        return b"\x4e" + i.to_bytes(4, "little")
 
 
 def dsha256(b):
@@ -51,7 +63,7 @@ def dsha256(b):
 def merkle_from_txids(txids: List[bytes]):
     # https://github.com/maaku/python-bitcoin/blob/master/bitcoin/merkle.py
     if not txids:
-        return dsha256(b'')
+        return dsha256(b"")
     if len(txids) == 1:
         return txids[0]
     while len(txids) > 1:
@@ -67,7 +79,7 @@ class TemplateState:
 
     # The address of the miner that first connects is
     # the one that is used
-    address: Optional[str] = None
+    pub_h160: Optional[str] = None
 
     # We store the following in hex because they are
     # Used directly in API to the miner
@@ -94,10 +106,17 @@ class TemplateState:
     bits_counter = 0
 
     def __repr__(self):
-        return f'Height:\t\t{self.height}\nAddress:\t\t{self.address}\nBits:\t\t{self.bits}\nTarget:\t\t{self.target}\nHeader Hash:\t\t{self.headerHash}\nVersion:\t\t{self.version}\nPrevious Header:\t\t{self.prevHash.hex()}\nExtra Txs:\t\t{self.externalTxs}\nSeed Hash:\t\t{self.seedHash.hex()}\nHeader:\t\t{self.header.hex()}\nCoinbase:\t\t{self.coinbase_tx.hex()}\nCoinbase txid:\t\t{self.coinbase_txid.hex()}\nNew sessions:\t\t{self.new_sessions}\nSessions:\t\t{self.all_sessions}'
+        return f"Height:\t\t{self.height}\nAddress:\t\t{self.pub_h160}\nBits:\t\t{self.bits}\nTarget:\t\t{self.target}\nHeader Hash:\t\t{self.headerHash}\nVersion:\t\t{self.version}\nPrevious Header:\t\t{self.prevHash.hex()}\nExtra Txs:\t\t{self.externalTxs}\nSeed Hash:\t\t{self.seedHash.hex()}\nHeader:\t\t{self.header.hex()}\nCoinbase:\t\t{self.coinbase_tx.hex()}\nCoinbase txid:\t\t{self.coinbase_txid.hex()}\nNew sessions:\t\t{self.new_sessions}\nSessions:\t\t{self.all_sessions}"
 
     def build_block(self, nonce: str, mixHash: str) -> str:
-        return self.header.hex() + nonce + mixHash + var_int(len(self.externalTxs) + 1).hex() + self.coinbase_tx.hex() + ''.join(self.externalTxs)
+        return(
+            self.header.hex()
+            + nonce
+            + mixHash
+            + var_int(len(self.externalTxs) + 1).hex()
+            + self.coinbase_tx.hex()
+            + "".join(self.externalTxs)
+        )
 
 
 def add_old_state_to_queue(queue, state, drop_after: int):
@@ -115,11 +134,23 @@ def lookup_old_state(queue, id: str) -> Optional[TemplateState]:
 
 class StratumSession(RPCSession):
 
-    def __init__(self, state: TemplateState, old_states, testnet: bool, node_url: str, node_username: str, node_password: str, node_port: int, transport):
+    def __init__(
+        self,
+        state: TemplateState,
+        old_states,
+        devnet: bool,
+        verbose: bool,
+        node_url: str,
+        node_username: str,
+        node_password: str,
+        node_port: int,
+        transport
+    ):
         connection = JSONRPCConnection(JSONRPCv1)
         super().__init__(transport, connection=connection)
         self._state = state
-        self._testnet = testnet
+        self._devnet = devnet
+        self._verbose = verbose
 
         self._old_states = old_states
 
@@ -128,11 +159,13 @@ class StratumSession(RPCSession):
         self._node_password = node_password
         self._node_port = node_port
 
+        self.name = None
+
         self.handlers = {
-            'mining.subscribe': self.handle_subscribe,
-            'mining.authorize': self.handle_authorize,
-            'mining.submit': self.handle_submit,
-            'eth_submitHashrate': self.handle_eth_submitHashrate
+            "mining.subscribe": self.handle_subscribe,
+            "mining.authorize": self.handle_authorize,
+            "mining.submit": self.handle_submit,
+            "eth_submitHashrate": self.handle_eth_submitHashrate
         }
 
     async def handle_request(self, request):
@@ -146,8 +179,12 @@ class StratumSession(RPCSession):
         return await handler_invocation(handler, request)()
 
     async def connection_lost(self):
-        worker = str(self).strip('>').split()[3]
-        print(f'Connection lost: {worker}')
+        worker = str(self).strip(">").split()[3]
+        #print(f'Connection lost: {worker}')
+        if self._verbose:
+            if self.name:
+                print(f"Connection lost: {self.name} ({worker})")
+            else:
         hashratedict.pop(worker, None)
         self._state.new_sessions.discard(self)
         self._state.all_sessions.discard(self)
@@ -158,18 +195,31 @@ class StratumSession(RPCSession):
             self._state.new_sessions.add(self)
         self._state.bits_counter += 1
         # We dont support resuming sessions, ensure unique work for unique miners
-        return [None, self._state.bits_counter.to_bytes(2, 'big').hex()]
-    
+        return [None, self._state.bits_counter.to_bytes(2, "big").hex()]
+
     async def handle_authorize(self, username: str, password: str):
         # The first address that connects is the one that is used
-        address = username.split('.')[0]
-        if base58.b58decode_check(address)[0] != (111 if self._testnet else 33):
-            raise RPCError(20, f'Invalid address {address}')
-        if not self._state.address:
-            self._state.address = address
+        split = username.split(".")
+        address = split[0]
+        if len(split) > 1:
+            self.name = split[1]
+        addr_decoded = base58.b58decode_check(address)
+        # Accept both regular and script addresses
+        valid_prefixes = (45, 107) if self._devnet else (63, 125)  # K/k for devnet, S/s for mainnet
+        if addr_decoded[0] not in valid_prefixes:
+            raise RPCError(20, f"Invalid address {address}")
+        if not self._state.pub_h160:
+            self._state.pub_h160 = address
         return True
 
-    async def handle_submit(self, worker: str, job_id: str, nonce_hex: str, header_hex: str, mixhash_hex: str):
+    async def handle_submit(
+        self,
+        worker: str,
+        job_id: str,
+        nonce_hex: str,
+        header_hex: str,
+        mixhash_hex: str
+    ):
         log_file = open("solved_blocks.txt", "a")
         now = datetime.now()
         current_time = now.strftime("%H:%M:%S")
@@ -177,160 +227,196 @@ class StratumSession(RPCSession):
 
         log_file.write(current_date + " " + current_time + "\n")
 
-        print('Possible solution')
-        log_file.write("Possible solution\n")
-        print(worker)
-        log_file.write(worker + "\n")
-        print(job_id)
-        log_file.write(job_id + "\n")
-        print(header_hex)
-        log_file.write(header_hex + "\n")
-       
-
-
+        if self._verbose:
+            print('Possible solution')
+            log_file.write("Possible solution\n")
+            print(worker)
+            log_file.write(worker + "\n")
+            print(job_id)
+            log_file.write(job_id + "\n")
+            print(header_hex)
+            log_file.write(header_hex + "\n")
+            print(current_date + " " + current_time)
 
         # We can still propogate old jobs; there may be a chance that they get used
         state = self._state
 
         if job_id != hex(state.job_counter)[2:]:
-            print('An old job was submitted, trying old states')
+            if self._verbose:
+                print("An old job was submitted, trying old states")
             old_state = lookup_old_state(self._old_states, job_id)
             if old_state is not None:
                 state = old_state
             else:
-                raise RPCError(20, 'Miner submitted an old job that we did not have')
+                raise RPCError(20, "Miner submitted an old job that we did not have")
 
-        if nonce_hex[:2].lower() == '0x':
+        if nonce_hex[:2].lower() == "0x":
             nonce_hex = nonce_hex[2:]
         nonce_hex = bytes.fromhex(nonce_hex)[::-1].hex()
-        if mixhash_hex[:2].lower() == '0x':
+        if mixhash_hex[:2].lower() == "0x":
             mixhash_hex = mixhash_hex[2:]
         mixhash_hex = bytes.fromhex(mixhash_hex)[::-1].hex()
-        
+
         block_hex = state.build_block(nonce_hex, mixhash_hex)
         print(block_hex)
+
         data = {
-            'jsonrpc':'2.0',
-            'id':'0',
-            'method':'submitblock',
-            'params':[block_hex]
+            "jsonrpc": "2.0",
+            "id": "0",
+            "method": "submitblock",
+            "params": [block_hex],
         }
         async with ClientSession() as session:
-            async with session.post(f'http://{self._node_username}:{self._node_password}@{self._node_url}:{self._node_port}', data=json.dumps(data)) as resp:
+            async with session.post(
+                f"http://{self._node_username}:{self._node_password}@{self._node_url}:{self._node_port}",
+                data=json.dumps(data)
+            ) as resp:
                 json_resp = await resp.json()
-                print(json_resp)
                 log_file.write(json.dumps(json_resp) + "\n")
-                if json_resp.get('error', None):
-                    raise RPCError(20, json_resp['error'])
-                
-                result = json_resp.get('result', None)
-                if result == 'inconclusive':
-                    # inconclusive - valid submission but other block may be better, etc.
-                    print('Valid block but inconclusive')
-                    log_file.write("Valid block but inconclusive \n")
-                elif result == 'duplicate':
-                    print('Valid block but duplicate')
-                    log_file.write("Valid block but duplicate \n")
-                elif result == 'duplicate-inconclusive':
-                    print('Valid block but duplicate-inconclusive')
-                    log_file.write("Valid block but duplicate-inconclusive \n")
-                elif result == 'inconclusive-not-best-prevblk':
-                    print('Valid block but inconclusive-not-best-prevblk')
-                    log_file.write("Valid block but inconclusive-not-best-prevblk \n")
-                
-                if result not in (None, 'inconclusive', 'duplicate', 'duplicate-inconclusive', 'inconclusive-not-best-prevblk'):
-                    raise RPCError(20, json_resp['result'])
+
+                if self._verbose:
+                    print(json_resp)
+
+                if json_resp.get("error", None):
+                    raise RPCError(20, json_resp["error"])
+
+                result = json_resp.get("result", None)
+                if self._verbose:
+                    if result == "inconclusive":
+                        # inconclusive - valid submission but other block may be better, etc.
+                        print("Valid block but inconclusive")
+                        log_file.write("Valid block but inconclusive \n")
+                    elif result == "duplicate":
+                        print("Valid block but duplicate")
+                        log_file.write("Valid block but duplicate \n")
+                    elif result == "duplicate-inconclusive":
+                        print("Valid block but duplicate-inconclusive")
+                        log_file.write("Valid block but duplicate-inconclusive \n")
+                    elif result == "inconclusive-not-best-prevblk":
+                        print("Valid block but inconclusive-not-best-prevblk")
+                        log_file.write("Valid block but inconclusive-not-best-prevblk \n")
+
+                if result not in (
+                    None,
+                    "inconclusive",
+                    "duplicate",
+                    "duplicate-inconclusive",
+                    "inconclusive-not-best-prevblk"
+                ):
+                    raise RPCError(20, json_resp["result"])
 
         # Get height from block hex
-        block_height = int.from_bytes(bytes.fromhex(block_hex[(4+32+32+4+4)*2:(4+32+32+4+4+4)*2]), 'little', signed=False)
-        msg = f'Found block (may or may not be accepted by the chain): {block_height}'
+        block_height = int.from_bytes(
+            bytes.fromhex(
+                block_hex[(4 + 32 + 32 + 4 + 4) * 2 : (4 + 32 + 32 + 4 + 4 + 4) *2]
+            ),
+            "little",
+            signed=False
+        )
+        msg = f"Found block (may or may not be accepted by the chain): {block_height}"
         print(msg)
         log_file.write(msg + " \n")
         log_file.write("\n\n\n")
-        await self.send_notification('client.show_message', (msg,))
+        await self.send_notification("client.show_message", (msg,))
         log_file.close()
         return True
-    
+
     async def handle_eth_submitHashrate(self, hashrate: str, clientid: str):
     # The clienid is a random hex string
         data = {
-            'jsonrpc':'2.0',
-            'id':'0',
-            'method':'getmininginfo',
-            'params':[]
-        }    
-        async with ClientSession() as session:    
-            async with session.post(f'http://{self._node_username}:{self._node_password}@{self._node_url}:{self._node_port}', data=json.dumps(data)) as resp:
+            "jsonrpc": "2.0",
+            "id": "0",
+            "method": "getmininginfo",
+            "params": []
+        }
+        async with ClientSession() as session:
+            async with session.post(
+                f"http://{self._node_username}:{self._node_password}@{self._node_url}:{self._node_port}",
+                data=json.dumps(data)
+            ) as resp:
                 try:
                     json_obj = await resp.json()
-                    if json_obj.get('error', None):
-                        raise Exception(json_obj.get('error', None))
+                    if json_obj.get("error", None):
+                        raise Exception(json_obj.get("error", None))
 
-                    blocks_int: int = json_obj['result']['blocks']
-                    difficulty_int: int = json_obj['result']['difficulty']
-                    networkhashps_int: int = json_obj['result']['networkhashps']
-                
+                    blocks_int: int = json_obj["result"]["blocks"]
+                    difficulty_int: int = json_obj["result"]["difficulty"]
+                    networkhashps_int: int = json_obj["result"]["networkhashps"]
+
                 except Exception as e:
-                    print('Failed to query mininginfo from node')
+                    print("Failed to query mininginfo from node")
                     import traceback
                     traceback.print_exc()
                     exit(1)
-        
+
         hashrate = int(hashrate, 16)
-        worker = str(self).strip('>').split()[3]
+        worker = str(self).strip(">").split()[3]
         hashratedict.update({worker: hashrate})
         totalHashrate = 0
-        
-        print(f'----------------------------')
+
+        print(f"----------------------------")
         #print(self._state.worker)
         for x, y in hashratedict.items():
             totalHashrate += y
-            print(f'Reported Hashrate: {round(y / 1000000, 2)}Mh/s for ID: {x}')
-        print(f'----------------------------')
-        print(f'Total Reported Hashrate: {round(totalHashrate / 1000000, 2)}Mh/s')
-        
-        if testnet == True:
-            print(f'Network Hashrate: {round(networkhashps_int / 1000000, 2)}Mh/s')
+            print(f"Reported Hashrate: {round(y / 1000000, 2)}Mh/s for ID: {x}")
+        print(f"----------------------------")
+        print(f"Total Reported Hashrate: {round(totalHashrate / 1000000, 2)}Mh/s")
+
+        if devnet == True:
+            print(f"Network Hashrate: {round(networkhashps_int / 1000000, 2)}Mh/s")
         else:
-            print(f'Network Hashrate: {round(networkhashps_int / 1000000000000, 2)}Th/s')
-        
+            print(f"Network Hashrate: {round(networkhashps_int / 1000000000000, 2)}Th/s")
+
         if totalHashrate != 0:
             TTF = difficulty_int * 2**32 / totalHashrate
-            if testnet == True:
-                msg = f'Estimated time to find: {round(TTF)} seconds'
+            if devnet == True:
+                msg = f"Estimated time to find: {round(TTF)} seconds"
             else:
-                msg = f'Estimated time to find: {round(TTF / 86400, 2)} days'
+                msg = f"Estimated time to find: {round(TTF / 86400, 2)} days"
             print(msg)
-            await self.send_notification('client.show_message', (msg,))
+            await self.send_notification("client.show_message", (msg,))
         else:
-            print('Mining software has yet to send data')
+            print("Mining software has yet to send data")
         return True
 
-async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: str, node_username: str, node_password: str, node_port: int):
-    if not state.address:
+async def stateUpdater(
+    state: TemplateState,
+    old_states,
+    drop_after,
+    devnet
+    verbose,
+    node_url: str,
+    node_username: str,
+    node_password: str,
+    node_port: int
+):
+    if not state.pub_h160:
         return
     data = {
-        'jsonrpc':'2.0',
-        'id':'0',
-        'method':'getblocktemplate',
-        'params':[]
+        "jsonrpc": "2.0",
+        "id": "0",
+        "method": "getblocktemplate",
+        "params":[]
     }
     async with ClientSession() as session:
-        async with session.post(f'http://{node_username}:{node_password}@{node_url}:{node_port}', data=json.dumps(data)) as resp:
+        async with session.post(
+            f"http://{node_username}:{node_password}@{node_url}:{node_port}",
+            data=json.dumps(data)
+        ) as resp:
             try:
                 json_obj = await resp.json()
-                if json_obj.get('error', None):
-                    raise Exception(json_obj.get('error', None))
+                if json_obj.get("error", None):
+                    raise Exception(json_obj.get("error", None))
 
-                version_int: int = json_obj['result']['version']
-                height_int: int = json_obj['result']['height'] 
-                bits_hex: str = json_obj['result']['bits'] 
-                prev_hash_hex: str = json_obj['result']['previousblockhash']
-                txs_list: List = json_obj['result']['transactions']
-                coinbase_sats_int: int = json_obj['result']['coinbasevalue'] 
-                witness_hex: str = json_obj['result']['default_witness_commitment']
-                coinbase_flags_hex: str = json_obj['result']['coinbaseaux']['flags']
-                target_hex: str = json_obj['result']['target']
+                version_int: int = json_obj["result"]["version"]
+                height_int: int = json_obj["result"]["height"]
+                bits_hex: str = json_obj["result"]["bits"]
+                prev_hash_hex: str = json_obj["result"]["previousblockhash"]
+                txs_list: List = json_obj["result"]["transactions"]
+                coinbase_sats_int: int = json_obj["result"]["coinbasevalue"]
+                witness_hex: str = json_obj["result"]["default_witness_commitment"]
+                coinbase_flags_hex: str = json_obj["result"]["coinbaseaux"]["flags"]
+                target_hex: str = json_obj["result"]["target"]
 
                 ts = int(time.time())
                 new_witness = witness_hex != state.current_commitment
@@ -349,38 +435,46 @@ async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: s
                 if state.height == -1 or state.height != height_int:
                     original_state = deepcopy(state)
                     # New block, update everything
-                    print('New block, update state')
+                    if verbose:
+                        print('New block, update state')
                     new_block = True
 
                     # Generate seed hash #
                     if state.height == - 1 or height_int > state.height:
                         if not state.seedHash:
                             seed_hash = bytes(32)
-                            for _ in range(height_int//KAWPOW_EPOCH_LENGTH):
+                            for _ in range(height_int // KAWPOW_EPOCH_LENGTH):
                                 k = sha3.keccak_256()
                                 k.update(seed_hash)
                                 seed_hash = k.digest()
-                            print(f'Initialized seedhash to {seed_hash.hex()}')
+                            if verbose:
+                                print(f"Initialized seedhash to {seed_hash.hex()}")
                             state.seedHash = seed_hash
                         elif state.height % KAWPOW_EPOCH_LENGTH == 0:
                             # Hashing is expensive, so want use the old val
                             k = sha3.keccak_256()
                             k.update(state.seedHash)
                             seed_hash = k.digest()
-                            print(f'updated seed hash to {seed_hash.hex()}')
+                            if verbose:
+                                print(f'updated seed hash to {seed_hash.hex()}')
                             state.seedHash = seed_hash
                     elif state.height > height_int:
                         # Maybe a chain reorg?
-                        
+
                         # If the difference between heights is greater than how far we are into the epoch
-                        if state.height % KAWPOW_EPOCH_LENGTH - (state.height - height_int) < 0:
+                        if (
+                            state.height % KAWPOW_EPOCH_LENGTH
+                            - (state.height
+                            - height_int)
+                            < 0
+                        ):
                             # We must go back an epoch; recalc
                             seed_hash = bytes(32)
                             for _ in range(height_int//KAWPOW_EPOCH_LENGTH):
                                 k = sha3.keccak_256()
                                 k.update(seed_hash)
                                 seed_hash = k.digest()
-                            print(f'Reverted seedhash to {seed_hash}')
+                            print(f"Reverted seedhash to {seed_hash}")
                             state.seedHash = seed_hash
 
                     # Done with seed hash #
@@ -395,20 +489,36 @@ async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: s
 
                     bytes_needed_sub_1 = 0
                     while True:
-                        if state.height <= (2**(7 + (8 * bytes_needed_sub_1))) - 1:
+                        if state.height <= (2 ** (7 + (8 * bytes_needed_sub_1))) - 1:
                             break
                         bytes_needed_sub_1 += 1
 
-                    bip34_height = state.height.to_bytes(bytes_needed_sub_1 + 1, 'little')
+                    bip34_height = state.height.to_bytes(bytes_needed_sub_1 + 1, "little")
 
                     # Note that there is a max allowed length of arbitrary data.
                     # I forget what it is (TODO lol) but note that this string is close
                     # to the max.
-                    arbitrary_data = b'with a little help from http://github.com/kralverde/ravencoin-stratum-proxy'
-                    coinbase_script = op_push(len(bip34_height)) + bip34_height + b'\0' + op_push(len(arbitrary_data)) + arbitrary_data
-                    coinbase_txin = bytes(32) + b'\xff'*4 + var_int(len(coinbase_script)) + coinbase_script + b'\xff'*4
-                    vout_to_miner = b'\x76\xa9\x14' + base58.b58decode_check(state.address)[1:] + b'\x88\xac'
-                    vout_to_devfund = b'\xa9\x14' + base58.b58decode_check("eHNUGzw8ZG9PGC8gKtnneyMaQXQTtAUm98")[1:] + b'\x87'
+                    arbitrary_data = b"with a little help from satori-kawpow-stratum-proxy"
+                    coinbase_script = (
+                        op_push(len(bip34_height))
+                        + bip34_height
+                        + op_push(len(arbitrary_data))
+                        + arbitrary_data
+                    )
+                    coinbase_txin = (
+                        bytes(32)
+                        + b"\xff"*4
+                        + var_int(len(coinbase_script))
+                        + coinbase_script
+                        + b"\xff"*4
+                    )
+                    vout_to_miner = b"\x76\xa9\x14" + state.pub_h160 + b"\x88\xac"
+                    # Determine address based on network
+                    if devnet:
+                        dev_fund_address = "kSTr1HBU9BV852BxH9gyVa7X1J2P2BYPav"  # Devnet address
+                    else:
+                        dev_fund_address = "sTr1PJGSuYUG3PM5SGUquUF3BEfKNVDkr7"  # Mainnet address
+                    vout_to_devfund = b"\xa9\x14" + base58.b58decode_check(dev_fund_address)[1:]  + b"\x87"
 
                     # Concerning the default_witness_commitment:
                     # https://github.com/bitcoin/bips/blob/master/bip-0141.mediawiki#commitment-structure
@@ -419,22 +529,42 @@ async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: s
 
                     witness_vout = bytes.fromhex(witness_hex)
 
-                    state.coinbase_tx = (int(1).to_bytes(4, 'little') + \
-                                    b'\x00\x01' + \
-                                    b'\x01' + coinbase_txin + \
-                                    b'\x03' + \
-                                        int(coinbase_sats_int*0.9).to_bytes(8, 'little') + op_push(len(vout_to_miner)) + vout_to_miner + \
-                                        int(coinbase_sats_int*0.1).to_bytes(8, 'little') + op_push(len(vout_to_devfund)) + vout_to_devfund + \
-                                        bytes(8) + op_push(len(witness_vout)) + witness_vout + \
-                                    b'\x01\x20' + bytes(32) + bytes(4))
+                    state.coinbase_tx = (
+                        int(1).to_bytes(4, "little")
+                        + b"\x00\x01"
+                        + b"\x01"
+                        + coinbase_txin
+                        + b"\x03"
+                        + int(coinbase_sats_int*0.9).to_bytes(8, "little")
+                        + op_push(len(vout_to_miner))
+                        + vout_to_miner
+                        + int(coinbase_sats_int*0.4).to_bytes(8, "little")
+                        + op_push(len(vout_to_devfund))
+                        + vout_to_devfund
+                        + bytes(8)
+                        + op_push(len(witness_vout))
+                        + witness_vout
+                        + b"\x01\x20"
+                        + bytes(32)
+                        + bytes(4)
+                    )
 
-                    coinbase_no_wit = int(1).to_bytes(4, 'little') + \
-                                        b'\x01' + coinbase_txin + \
-                                        b'\x03' + \
-                                            int(coinbase_sats_int*0.9).to_bytes(8, 'little') + op_push(len(vout_to_miner)) + vout_to_miner + \
-                                            int(coinbase_sats_int*0.1).to_bytes(8, 'little') + op_push(len(vout_to_devfund)) + vout_to_devfund + \
-                                            bytes(8) + op_push(len(witness_vout)) + witness_vout + \
-                                        bytes(4)
+                    coinbase_no_wit = (
+                        int(1).to_bytes(4, "little")
+                        + b"\x01"
+                        + coinbase_txin
+                        + b"\x03"
+                        + int(coinbase_sats_int*0.9).to_bytes(8, "little")
+                        + op_push(len(vout_to_miner))
+                        + vout_to_miner
+                        + int(coinbase_sats_int*0.4).to_bytes(8, "little")
+                        + op_push(len(vout_to_devfund))
+                        + vout_to_devfund
+                        + bytes(8)
+                        + op_push(len(witness_vout))
+                        + witness_vout
+                        + bytes(4)
+                    )
                     state.coinbase_txid = dsha256(coinbase_no_wit)
 
 
@@ -442,19 +572,21 @@ async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: s
                     txids = [state.coinbase_txid]
                     incoming_txs = []
                     for tx_data in txs_list:
-                        incoming_txs.append(tx_data['data'])
-                        txids.append(bytes.fromhex(tx_data['txid'])[::-1])
+                        incoming_txs.append(tx_data["data"])
+                        txids.append(bytes.fromhex(tx_data["txid"])[::-1])
                     state.externalTxs = incoming_txs
                     merkle = merkle_from_txids(txids)
 
                     # Done create merkle & update txs
 
-                    state.header = version_int.to_bytes(4, 'little') + \
-                            state.prevHash + \
-                            merkle + \
-                            ts.to_bytes(4, 'little') + \
-                            bytes.fromhex(bits_hex)[::-1] + \
-                            state.height.to_bytes(4, 'little')
+                    state.header = (
+                        version_int.to_bytes(4, "little")
+                        + state.prevHash
+                        + merkle
+                        + ts.to_bytes(4, "little")
+                        + bytes.fromhex(bits_hex)[::-1]
+                        + state.height.to_bytes(4, "little")
+                    )
 
                     state.headerHash = dsha256(state.header)[::-1].hex()
                     state.timestamp = ts
@@ -463,45 +595,75 @@ async def stateUpdater(state: TemplateState, old_states, drop_after, node_url: s
                     add_old_state_to_queue(old_states, original_state, drop_after)
 
                     for session in state.all_sessions:
-                        await session.send_notification('mining.set_target', (target_hex,))
-                        await session.send_notification('mining.notify', (hex(state.job_counter)[2:], state.headerHash, state.seedHash.hex(), target_hex, True, state.height, bits_hex))
-                
+                        await session.send_notification(
+                            "mining.set_target", (target_hex,)
+                        )
+                        await session.send_notification(
+                            "mining.notify",
+                            (
+                                hex(state.job_counter)[2:],
+                                state.headerHash,
+                                state.seedHash.hex(),
+                                target_hex,
+                                True,
+                                state.height,
+                                bits_hex
+                            )
+                        )
+
                 for session in state.new_sessions:
                     state.all_sessions.add(session)
-                    await session.send_notification('mining.set_target', (target_hex,))
-                    await session.send_notification('mining.notify', (hex(state.job_counter)[2:], state.headerHash, state.seedHash.hex(), target_hex, True, state.height, bits_hex))
-                
+                    await session.send_notification("mining.set_target", (target_hex,))
+                    await session.send_notification(
+                        "mining.notify",
+                        (
+                            hex(state.job_counter)[2:],
+                            state.headerHash,
+                            state.seedHash.hex(),
+                            target_hex,
+                            True,
+                            state.height,
+                            bits_hex
+                        )
+                    )
+
                 state.new_sessions.clear()
 
             except Exception as e:
-                print('Failed to query blocktemplate from node')
+                print("Failed to query blocktemplate from node")
                 import traceback
                 traceback.print_exc()
-                print('Sleeping for 5 minutes.\nAny solutions found during this time may not be current.\nTry restarting the proxy.')
+                print("Sleeping for 5 minutes.\nAny solutions found during this time may not be current.\nTry restarting the proxy.")
                 await asyncio.sleep(300)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     def check_bool(x) -> bool:
         if isinstance(x, str):
-            return x.lower()[0] == 't'
+            return x.lower()[0] == "t"
         return bool(x)
-    
+
     if len(sys.argv) < 7:
-        print('arguments must be: proxy_port, node_ip, node_username, node_password, node_port, listen_externally, (testnet - optional)')
+        print("arguments must be: proxy_port, node_ip, node_username, node_password, node_port, listen_externally, (optional: devnet, verbose)")
         exit(0)
 
     proxy_port = int(sys.argv[1])
     node_url = str(sys.argv[2])
-    node_username = urllib.parse.quote(str(sys.argv[3]), safe='')
-    node_password = urllib.parse.quote(str(sys.argv[4]), safe='')
+    node_username = urllib.parse.quote(str(sys.argv[3]), safe="")
+    node_password = urllib.parse.quote(str(sys.argv[4]), safe="")
     node_port = int(sys.argv[5])
     should_listen_externaly = check_bool(sys.argv[6])
-    testnet = False
+    devnet = False
+    verbose = False
     if len(sys.argv) > 7:
-        testnet = check_bool(sys.argv[7])
-    
-    print('Starting stratum converter')
+        devnet = check_bool(sys.argv[7])
+    if len(sys.argv) > 8:
+        verbose = check_bool(sys.argv[8])
+
+    if not os.path.exists("./submit_history"):
+        os.mkdir("./submit_history")
+
+    print("Starting stratum converter")
 
     # The shared state
     state = TemplateState()
@@ -510,17 +672,40 @@ if __name__ == '__main__':
     # only save 20 historic states (magic number)
     store = 20
 
-    session_generator = partial(StratumSession, state, historical_states, testnet, node_url, node_username, node_password, node_port)
+    session_generator = partial(
+        StratumSession,
+        state,
+        historical_states,
+        devnet,
+        verbose
+        node_url,
+        node_username,
+        node_password,
+        node_port,
+    )
 
     async def updateState():
         while True:
-            await stateUpdater(state, historical_states, store, node_url, node_username, node_password, node_port)
+            await stateUpdater(
+                state,
+                historical_states,
+                store,
+                node_url,
+                node_username,
+                node_password,
+                node_port,
+            )
             # Check for new blocks / new transactions every 0.1 seconds
             # stateUpdater should fast fail if no differences
             await asyncio.sleep(0.1)
 
     async def beginServing():
-        server = await serve_rs(session_generator, None if should_listen_externaly else '127.0.0.1', proxy_port, reuse_address=True)
+        server = await serve_rs(
+            session_generator,
+            None if should_listen_externaly else "127.0.0.1",
+            proxy_port,
+            reuse_address=True,
+        )
         await server.serve_forever()
 
     async def execute():
@@ -532,6 +717,6 @@ if __name__ == '__main__':
             if not task.cancelled():
                 exc = task.exception()
                 if exc:
-                    raise exc        
+                    raise exc
 
     asyncio.run(execute())

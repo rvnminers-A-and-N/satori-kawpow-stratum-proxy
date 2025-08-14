@@ -1,9 +1,9 @@
 @echo off
 
 set "CURRENT_DIRECTORY=%~dp0"
-if NOT "%CURRENT_DIRECTORY:~-31%" == "\evrmore-stratum-proxy\windows\" (
-    if NOT "%CURRENT_DIRECTORY:~-38%" == "\evrmore-stratum-proxy-master\windows\" (
-        echo Error: Please run this batch file as-is from its original location in the ravencoin-stratum-proxy folder
+if NOT "%CURRENT_DIRECTORY:~-37%" == "\satori-kawpow-stratum-proxy\windows\" (
+    if NOT "%CURRENT_DIRECTORY:~-44%" == "\satori-kawpow-stratum-proxy-master\windows\" (
+        echo Error: Please run this batch file as-is from its original location in the satori-kawpow-stratum-proxy folder
 	pause
         exit /B
     )
@@ -81,28 +81,49 @@ echo regenerating run.bat ...
 echo ==========================================================
 :CHECK_MAINNET
 set "IS_MAINNET=y"
-set /p "IS_MAINNET_INPUT=Is this for mainnet or testnet? (Default mainnet): "
+set /p "IS_MAINNET_INPUT=Is this for mainnet or devnet? (Default mainnet): "
 if "%IS_MAINNET_INPUT%" == "" (
     set "IS_MAINNET_INPUT=mainnet"
 )
 
 if "%IS_MAINNET_INPUT%" == "mainnet" (
     set "IS_MAINNET=y"
-    set "DEFAULT_PORT=8819"
+    set "DEFAULT_PORT=8420"
     goto POST_CHECK_MAINNET
 )
 
-if "%IS_MAINNET_INPUT%" == "testnet" (
+if "%IS_MAINNET_INPUT%" == "devnet" (
     set "IS_MAINNET="
-    set "DEFAULT_PORT=18819"
+    set "DEFAULT_PORT=28420"
     goto POST_CHECK_MAINNET
 )
 
-echo Unknown input: %IS_MAINNET_INPUT% options are: (mainnet/testnet)
+echo Unknown input: %IS_MAINNET_INPUT% options are: (mainnet/devnet)
 set "IS_MAINNET_INPUT="
 goto CHECK_MAINNET
 
 :POST_CHECK_MAINNET
+echo ==========================================================
+:CHECK_VERBOSE
+
+set "VERBOSE_OUTPUT="
+set /p "VERBOSE_INPUT=Enable verbose output? (y/n, Default n): "
+if "%VERBOSE_INPUT%" == "" (
+    set "VERBOSE_INPUT=n"
+)
+if "%VERBOSE_INPUT%" == "y" (
+    set "VERBOSE_OUTPUT=y"
+    goto POST_CHECK_VERBOSE
+)
+if "%VERBOSE_INPUT%" == "n" (
+    set "VERBOSE_OUTPUT="
+    goto POST_CHECK_VERBOSE
+)
+echo Unknown input: %VERBOSE_INPUT% options are: (y/n)
+set "VERBOSE_INPUT="
+goto CHECK_VERBOSE
+
+:POST_CHECK_VERBOSE
 echo ==========================================================
 
 set /p "NODE_IP=What is the ip of your node? (Default localhost): "
@@ -185,15 +206,18 @@ if %TEST_PORT% LEQ 1024 (
 set "EXTERNAL_STRING_VALUE=true"
 if NOT defined ALLOW_EXTERNAL_CONNECTIONS set "EXTERNAL_STRING_VALUE=false"
 
-set "TESTNET_STRING_VALUE=false"
-if NOT defined IS_MAINNET set "TESTNET_STRING_VALUE=true"
+set "DEVNET_STRING_VALUE=false"
+if NOT defined IS_MAINNET set "DEVNET_STRING_VALUE=true"
+
+set "VERBOSE_STRING_VALUE=false"
+if defined VERBOSE_OUTPUT set "VERBOSE_STRING_VALUE=true"
 
 echo generating bat file...
 echo @echo off>"%FILE_LOCATION%"
 echo echo ==========================================================>>"%FILE_LOCATION%"
 echo echo Connect to your stratum converter (with a miner on this computer) at stratum+tcp://localhost:%CONVERTER_PORT%>>"%FILE_LOCATION%"
 echo echo ==========================================================>>"%FILE_LOCATION%"
-echo "%CURRENT_DIRECTORY%python_files\python.exe" "%CURRENT_DIRECTORY%..\stratum-converter.py" %CONVERTER_PORT% %NODE_IP% %RPC_USERNAME% %RPC_PASSWORD% %NODE_PORT% %EXTERNAL_STRING_VALUE% %TESTNET_STRING_VALUE%>>"%FILE_LOCATION%"
+echo "%CURRENT_DIRECTORY%python_files\python.exe" "%CURRENT_DIRECTORY%..\stratum-converter.py" %CONVERTER_PORT% %NODE_IP% %RPC_USERNAME% %RPC_PASSWORD% %NODE_PORT% %EXTERNAL_STRING_VALUE% %DEVNET_STRING_VALUE% %VERBOSE_STRING_VALUE%>>"%FILE_LOCATION%"
 FOR %%A IN ("%~dp0.") DO SET FILE_LOCATION=%%~dpA
 echo done... runnable bat can be found at %FILE_LOCATION%run.bat
 pause
