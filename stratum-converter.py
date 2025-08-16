@@ -184,10 +184,10 @@ class StratumSession(RPCSession):
         if self._verbose:
             if self.name:
                 print(f"Connection lost: {self.name} ({worker})")
-            else:
-        hashratedict.pop(worker, None)
-        self._state.new_sessions.discard(self)
-        self._state.all_sessions.discard(self)
+        else:
+            hashratedict.pop(worker, None)
+            self._state.new_sessions.discard(self)
+            self._state.all_sessions.discard(self)
         return await super().connection_lost()
 
     async def handle_subscribe(self, *args):
@@ -383,7 +383,7 @@ async def stateUpdater(
     state: TemplateState,
     old_states,
     drop_after,
-    devnet
+    devnet,
     verbose,
     node_url: str,
     node_username: str,
@@ -677,7 +677,7 @@ if __name__ == "__main__":
         state,
         historical_states,
         devnet,
-        verbose
+        verbose,
         node_url,
         node_username,
         node_password,
@@ -690,6 +690,8 @@ if __name__ == "__main__":
                 state,
                 historical_states,
                 store,
+                devnet,
+                verbose,
                 node_url,
                 node_username,
                 node_password,
